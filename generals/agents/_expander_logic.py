@@ -1,13 +1,10 @@
-"""JAX-compatible expander agent logic (internal module)."""
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
+"""Expander agent logic using NumPy and numpy RNG (internal module)."""
+import numpy as np
 
 from generals.core.action import compute_valid_move_mask_obs, DIRECTIONS
 
 
-@jax.jit
-def expander_action(key: jnp.ndarray, observation) -> jnp.ndarray:
+def expander_action(rng: np.random.Generator, observation) -> np.ndarray:
     """
     Expander agent that prioritizes border expansion with strongest cells.
 
@@ -19,52 +16,44 @@ def expander_action(key: jnp.ndarray, observation) -> jnp.ndarray:
     valid_mask = compute_valid_move_mask_obs(observation)
     H, W = observation.armies.shape
 
-    valid_positions = jnp.argwhere(valid_mask, size=H * W * 4, fill_value=-1)
-    num_valid = jnp.sum(jnp.all(valid_positions >= 0, axis=-1))
-    should_pass = num_valid == 0
+    valid_positions = np.argwhere(valid_mask)
+    num_valid = valid_positions.shape[0]
+    if num_valid == 0:
+        return np.array([1, -1, -1, -1, 0], dtype=np.int32)
 
-    def evaluate_move(idx):
-        move = valid_positions[idx]
-        is_valid = jnp.all(move >= 0)
-
-        orig_row, orig_col, direction = move[0], move[1], move[2]
-
+    def score_move(move):
+        orig_row, orig_col, direction = int(move[0]), int(move[1]), int(move[2])
         di, dj = DIRECTIONS[direction]
-        dest_row = jnp.clip(orig_row + di, 0, H - 1)
-        dest_col = jnp.clip(orig_col + dj, 0, W - 1)
+        dest_row = np.clip(orig_row + di, 0, H - 1)
+        dest_col = np.clip(orig_col + dj, 0, W - 1)
 
         orig_armies = observation.armies[orig_row, orig_col]
         dest_armies = observation.armies[dest_row, dest_col]
-        is_opponent = observation.opponent_cells[dest_row, dest_col]
-        is_neutral = observation.neutral_cells[dest_row, dest_col]
-        is_owned = observation.owned_cells[dest_row, dest_col]
+        is_opponent = bool(observation.opponent_cells[dest_row, dest_col])
+        is_neutral = bool(observation.neutral_cells[dest_row, dest_col])
+        is_owned = bool(observation.owned_cells[dest_row, dest_col])
 
         can_capture = orig_armies > dest_armies + 1
-        is_expansion = ~is_owned & (is_opponent | is_neutral)
+        is_expansion = (not is_owned) and (is_opponent or is_neutral)
 
-        score = orig_armies.astype(jnp.float32)
-        score = jnp.where(is_expansion & can_capture, score * 10.0, score)
-        opponent_multiplier = jnp.where(is_opponent, 2.0, 1.0)
-        score = jnp.where(is_expansion & can_capture, score * opponent_multiplier, score)
-        score = jnp.where(is_valid & can_capture, score, 0.0)
-
+        score = float(orig_armies)
+        if is_expansion and can_capture:
+            score *= 10.0
+            if is_opponent:
+                score *= 2.0
+        if not (can_capture):
+            score = 0.0
         return score
 
-    scores = jax.vmap(evaluate_move)(jnp.arange(H * W * 4))
-    has_expansion_captures = jnp.sum(scores) > 0
+    scores = np.array([score_move(m) for m in valid_positions], dtype=float)
+    probs = scores.copy()
+    if probs.sum() <= 1e-8:
+        # no strong expansion captures, fallback to uniform over valid moves
+        probs = np.ones_like(probs)
+    probs = probs / (probs.sum() + 1e-8)
 
-    probs = jnp.where(
-        has_expansion_captures,
-        scores,
-        jnp.where(jnp.arange(H * W * 4) < num_valid, jnp.ones(H * W * 4), jnp.zeros(H * W * 4)),
-    )
-    probs = probs / (jnp.sum(probs) + 1e-8)
+    idx = rng.choice(len(valid_positions), p=probs)
+    selected_move = valid_positions[idx]
 
-    move_idx = jrandom.choice(key, H * W * 4, p=probs)
-    selected_move = valid_positions[move_idx]
-
-    return jnp.array(
-        [should_pass.astype(jnp.int32), selected_move[0], selected_move[1], selected_move[2], jnp.int32(0)],
-        dtype=jnp.int32,
-    )
+    return np.array([0, int(selected_move[0]), int(selected_move[1]), int(selected_move[2]), 0], dtype=np.int32)
 

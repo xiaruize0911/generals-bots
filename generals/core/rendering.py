@@ -1,21 +1,20 @@
 """
-Adapter to make JAX GameState compatible with the existing GUI rendering system.
+Adapter to make NumPy GameState compatible with the existing GUI rendering system.
 
-This module provides classes that wrap JAX GameState and present it with an
-interface compatible with the legacy Game class, allowing the existing pygame
-renderer to work with JAX states.
+This module provides classes that wrap GameState and present it with an
+interface compatible with the legacy Game class so the pygame renderer works
+with the NumPy-based game state objects.
 """
 
 import numpy as np
-import jax.numpy as jnp
 from typing import Any, Dict
 
 from generals.core.game import GameState, GameInfo
 
 
-class JaxChannelsAdapter:
+class NpChannelsAdapter:
     """
-    Adapter that makes JAX GameState look like the old Channels object.
+    Adapter that makes GameState look like the old Channels object using numpy.
 
     The renderer expects:
     - channels.armies: [H, W] array
@@ -30,7 +29,7 @@ class JaxChannelsAdapter:
         self._state = state
         self._agents = agents
 
-        # Convert JAX arrays to numpy for pygame
+        # Convert any array-like fields to numpy for pygame
         self.armies = np.array(state.armies)
         self.generals = np.array(state.generals)
         self.cities = np.array(state.cities)
@@ -43,26 +42,20 @@ class JaxChannelsAdapter:
             self.ownership[agent] = np.array(state.ownership[i])
 
     def get_visibility(self, agent_id: str) -> np.ndarray:
-        """
-        Get visibility mask for an agent (3x3 around owned cells).
-
-        Uses the JAX visibility function but returns numpy array.
-        """
+        """Get visibility mask for an agent (3x3 around owned cells)."""
         from generals.core import game
 
         # Find agent index
         agent_idx = self._agents.index(agent_id)
 
-        # Use JAX visibility function
-        visibility_jax = game.get_visibility(self._state.ownership[agent_idx])
-
-        # Convert to numpy
-        return np.array(visibility_jax)
+        # Use visibility function (returns array-like)
+        visibility = game.get_visibility(self._state.ownership[agent_idx])
+        return np.array(visibility)
 
 
-class JaxGameAdapter:
+class NpGameAdapter:
     """
-    Adapter that makes JAX GameState look like the old Game object.
+    Adapter that makes GameState look like the old Game object using numpy.
 
     The renderer expects:
     - game.agents: list of agent names
@@ -75,7 +68,7 @@ class JaxGameAdapter:
 
     def __init__(self, state: GameState, agents: list[str], info: GameInfo = None):
         self.agents = agents
-        self.channels = JaxChannelsAdapter(state, agents)
+        self.channels = NpChannelsAdapter(state, agents)
 
         # Grid dimensions
         self.grid_dims = state.armies.shape
@@ -108,21 +101,21 @@ class JaxGameAdapter:
         if self._info is None:
             # Compute info if not provided
             from generals.core import game
-            # Create GameState from self.channels
+            # Create GameState from self.channels (use numpy arrays)
             state = GameState(
-                armies=jnp.array(self.channels.armies),
-                ownership=jnp.stack([jnp.array(self.channels.ownership[agent]) for agent in self.agents]),
-                ownership_neutral=jnp.array(np.logical_not(
+                armies=np.array(self.channels.armies),
+                ownership=np.stack([np.array(self.channels.ownership[agent]) for agent in self.agents]),
+                ownership_neutral=np.array(np.logical_not(
                     np.logical_or(self.channels.ownership[self.agents[0]],
                                   self.channels.ownership[self.agents[1]])
                 )),
-                generals=jnp.array(self.channels.generals),
-                cities=jnp.array(self.channels.cities),
-                mountains=jnp.array(self.channels.mountains),
-                passable=jnp.array(np.logical_not(self.channels.mountains)),
-                general_positions=jnp.array([self.general_positions[agent] for agent in self.agents]),
-                time=jnp.int32(self.time),
-                winner=jnp.int32(-1),
+                generals=np.array(self.channels.generals),
+                cities=np.array(self.channels.cities),
+                mountains=np.array(self.channels.mountains),
+                passable=np.array(np.logical_not(self.channels.mountains)),
+                general_positions=np.array([self.general_positions[agent] for agent in self.agents]),
+                time=np.int32(self.time),
+                winner=np.int32(-1),
             )
             self._info = game.get_info(state)
 
@@ -143,7 +136,7 @@ class JaxGameAdapter:
 
     def update_from_state(self, state: GameState, info: GameInfo = None):
         """Update the adapter with a new state."""
-        self.channels = JaxChannelsAdapter(state, self.agents)
+        self.channels = NpChannelsAdapter(state, self.agents)
         self.time = int(state.time)
         self._info = info
 

@@ -2,7 +2,7 @@
 Performance benchmark for vectorized environments.
 
 Measures throughput (steps/second) with different configurations.
-Uses jax.lax.scan for maximum performance.
+Uses loops for compatibility.
 
 Usage:
     python benchmark_performance.py [num_envs] [num_steps] [iterations]
@@ -14,12 +14,11 @@ Examples:
 """
 import sys
 import time
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
+import torch
 
 from generals import GeneralsEnv, get_observation
 from generals.agents import RandomAgent
+import numpy as np
 
 # Parse arguments
 NUM_ENVS = int(sys.argv[1]) if len(sys.argv) > 1 else 256
@@ -27,6 +26,7 @@ NUM_STEPS = int(sys.argv[2]) if len(sys.argv) > 2 else 100
 ITERATIONS = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 GRID_DIMS = (10, 10)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("=" * 70)
 print("GENERALS.IO PERFORMANCE BENCHMARK")
 print("=" * 70)
@@ -35,7 +35,7 @@ print(f"  Num environments: {NUM_ENVS:,}")
 print(f"  Steps per iter:   {NUM_STEPS:,}")
 print(f"  Iterations:       {ITERATIONS}")
 print(f"  Grid size:        {GRID_DIMS[0]}x{GRID_DIMS[1]}")
-print(f"  Device:           {jax.devices()[0]}")
+print(f"  Device:           {device}")
 print(f"  Total steps:      {NUM_ENVS * NUM_STEPS * ITERATIONS:,}")
 print("=" * 70)
 
@@ -46,59 +46,52 @@ agent_1 = RandomAgent()
 
 
 def make_step_fn(env, agent_0, agent_1, num_envs):
-    """Create a single vectorized step function."""
-    
-    step_vmap = jax.vmap(env.step)
-    get_obs_p0 = jax.vmap(lambda s: get_observation(s, 0))
-    get_obs_p1 = jax.vmap(lambda s: get_observation(s, 1))
-    act_p0 = jax.vmap(agent_0.act)
-    act_p1 = jax.vmap(agent_1.act)
-    
-    def step_fn(carry, _):
-        states, key = carry
-        
-        # Get observations
-        obs_p0 = get_obs_p0(states)
-        obs_p1 = get_obs_p1(states)
-        
-        # Get actions
-        key, k1, k2 = jrandom.split(key, 3)
-        keys_p0 = jrandom.split(k1, num_envs)
-        keys_p1 = jrandom.split(k2, num_envs)
-        
-        actions_p0 = act_p0(obs_p0, keys_p0)
-        actions_p1 = act_p1(obs_p1, keys_p1)
-        actions = jnp.stack([actions_p0, actions_p1], axis=1)
-        
-        # Step environments
-        key, step_key = jrandom.split(key)
-        step_keys = jrandom.split(step_key, num_envs)
-        timesteps, new_states = step_vmap(states, actions, step_keys)
-        
-        # Count done episodes
-        done_count = jnp.sum(timesteps.terminated | timesteps.truncated)
-        
-        return (new_states, key), done_count
-    
+    """Create a simple (non-vectorized) step function factory.
+
+    This implementation runs the environments sequentially in a Python loop
+    which keeps the benchmark dependency-free.
+    """
+
+    def step_fn(states, rng):
+        new_states = []
+        done_count = 0
+        for i, s in enumerate(states):
+            # Observations for both players
+            obs_p0 = get_observation(s, 0)
+            obs_p1 = get_observation(s, 1)
+
+            # Actions
+            key_p0 = np.random.default_rng(rng.integers(0, 2 ** 31 - 1))
+            key_p1 = np.random.default_rng(rng.integers(0, 2 ** 31 - 1))
+            a0 = agent_0.act(obs_p0, key_p0)
+            a1 = agent_1.act(obs_p1, key_p1)
+            actions = np.stack([a0, a1], axis=0)
+
+            # Step the environment
+            timestep, ns = env.step(s, actions, None)
+            new_states.append(ns)
+
+            if timestep.terminated or timestep.truncated:
+                done_count += 1
+
+        return np.stack(new_states), done_count
+
     return step_fn
 
 
 def make_rollout_fn(env, agent_0, agent_1, num_envs, num_steps):
-    """Create a jitted rollout function using lax.scan."""
-    
+    """Create a simple rollout function that runs num_steps sequentially."""
+
     step_fn = make_step_fn(env, agent_0, agent_1, num_envs)
-    
-    @jax.jit
-    def rollout(states, key):
-        (final_states, final_key), done_counts = jax.lax.scan(
-            step_fn,
-            (states, key),
-            None,
-            length=num_steps
-        )
-        total_done = jnp.sum(done_counts)
-        return final_states, final_key, total_done
-    
+
+    def rollout(states, rng):
+        s = list(states)
+        total_done = 0
+        for _ in range(num_steps):
+            s, done_count = step_fn(s, rng)
+            total_done += int(done_count)
+        return s, rng, total_done
+
     return rollout
 
 
@@ -106,15 +99,11 @@ def make_rollout_fn(env, agent_0, agent_1, num_envs, num_steps):
 rollout_fn = make_rollout_fn(env, agent_0, agent_1, NUM_ENVS, NUM_STEPS)
 
 # Initialize environments
-key = jrandom.PRNGKey(42)
-reset_keys = jrandom.split(key, NUM_ENVS)
-reset_vmap = jax.vmap(env.reset)
-states = reset_vmap(reset_keys)
+rng = np.random.default_rng(42)
+states = [env.reset(rng) for _ in range(NUM_ENVS)]
 
-print("\nWarming up JIT compilation...")
-key, subkey = jrandom.split(key)
-states, key, _ = rollout_fn(states, subkey)
-jax.block_until_ready(states)
+print("\nWarming up...\n")
+states, _ = rollout_fn(states, rng)
 print("Warmup complete!\n")
 
 # Benchmark
@@ -125,11 +114,8 @@ iteration_times = []
 all_stats = []
 
 for iteration in range(ITERATIONS):
-    key, subkey = jrandom.split(key)
-    
     iter_start = time.time()
-    states, key, episode_count = rollout_fn(states, subkey)
-    jax.block_until_ready(states)
+    states, _, episode_count = rollout_fn(states, rng)
     iter_elapsed = time.time() - iter_start
     
     iteration_times.append(iter_elapsed)

@@ -6,83 +6,82 @@ Loads a saved model and renders the game using pygame.
 
 import sys
 import time
-import jax.numpy as jnp
-import jax.random as jrandom
-import equinox as eqx
+import torch
 import pygame
+import numpy as np
 
 from generals.core.action import compute_valid_move_mask
 from generals.core import game
 from generals.core.game import create_initial_state
 from generals.gui import GUI
 from generals.gui.properties import GuiMode
-from generals.envs.jax_rendering_adapter import JaxGameAdapter
+from generals.core.rendering import NpGameAdapter
 
-try:
-    from ppo.network import PolicyValueNetwork, obs_to_array
-except ImportError:
-    from examples.ppo.network import PolicyValueNetwork, obs_to_array
+from generals.agents.ppo.network import PolicyValueNetwork, obs_to_array
 
 
-def random_action(key, obs):
+def random_action(obs):
     """Random valid action."""
     mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    valid = jnp.argwhere(mask, size=100, fill_value=-1)
-    num_valid = jnp.sum(jnp.all(valid >= 0, axis=-1))
-    
-    k1, k2 = jrandom.split(key)
-    should_pass = num_valid == 0
-    idx = jnp.minimum(jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1)), num_valid - 1)
-    move = valid[idx]
-    is_half = jrandom.randint(k2, (), 0, 2)
-    
-    return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
+    valid = []
+    for i in range(mask.shape[0]):
+        for j in range(mask.shape[1]):
+            for d in range(4):
+                if mask[i, j, d]:
+                    valid.append((i, j, d))
+    if not valid:
+        return torch.tensor([1, 0, 0, 0, 0], dtype=torch.int32)  # pass
+    idx = torch.randint(0, len(valid), (1,)).item()
+    row, col, direction = valid[idx]
+    is_half = torch.randint(0, 2, (1,)).item()
+    return torch.tensor([0, row, col, direction, is_half], dtype=torch.int32)
 
 
-def load_model(model_path: str, grid_size: int = 4):
+def load_model(model_path: str, grid_size: int = 4, device: str = "cpu"):
     """Load a trained PPO model from file."""
     import os
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     
-    # Create a dummy network with the same structure
-    key = jrandom.PRNGKey(42)
-    network = PolicyValueNetwork(key, grid_size=grid_size)
+    # Create network
+    network = PolicyValueNetwork(grid_size=grid_size)
+    network.load_state_dict(torch.load(model_path, map_location=device))
+    network.to(device)
+    network.eval()
     
-    # Load the saved weights
-    network = eqx.tree_deserialise_leaves(model_path, network)
-    print(f"Loaded model from {model_path}")
     return network
 
 
 def main():
     # Parse command line arguments
-    model_path = sys.argv[1] if len(sys.argv) > 1 else "jax_ppo_model.eqx"
+    model_path = sys.argv[1] if len(sys.argv) > 1 else "pytorch_ppo_model.pth"
     fps = int(sys.argv[2]) if len(sys.argv) > 2 else 10
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading model from: {model_path}")
     print(f"Rendering at {fps} FPS")
+    print(f"Device: {device}")
     print()
     
     # Load the trained model
-    network = load_model(model_path, grid_size=4)
+    network = load_model(model_path, grid_size=4, device=device)
     
     # Initialize game state
-    key = jrandom.PRNGKey(43)
-    grid = jnp.zeros((4, 4), dtype=jnp.int32)
-    idx = jrandom.choice(key, 16, shape=(2,), replace=False)
-    pos_a = (idx[0] // 4, idx[0] % 4)
-    pos_b = (idx[1] // 4, idx[1] % 4)
-    grid = grid.at[pos_a].set(1).at[pos_b].set(2)
-    state = create_initial_state(grid)
+    grid = torch.zeros((4, 4), dtype=torch.int32)
+    positions = torch.randperm(16)[:2]
+    pos_a = (positions[0] // 4, positions[0] % 4)
+    pos_b = (positions[1] // 4, positions[1] % 4)
+    grid[pos_a] = 1
+    grid[pos_b] = 2
+    state = create_initial_state(np.array(grid.numpy()))
     
     # Agent names
     agents = ["PPO Agent", "Random"]
     
     # Create game adapter for rendering
     info = game.get_info(state)
-    game_adapter = JaxGameAdapter(state, agents, info)
+    game_adapter = NpGameAdapter(state, agents, info)
     
     # Create agent data for GUI
     agent_data = {
@@ -121,13 +120,13 @@ def main():
             time.sleep(2)
             
             # Reset game
-            key, reset_key = jrandom.split(key)
-            grid = jnp.zeros((4, 4), dtype=jnp.int32)
-            idx = jrandom.choice(reset_key, 16, shape=(2,), replace=False)
-            pos_a = (idx[0] // 4, idx[0] % 4)
-            pos_b = (idx[1] // 4, idx[1] % 4)
-            grid = grid.at[pos_a].set(1).at[pos_b].set(2)
-            state = create_initial_state(grid)
+            grid = torch.zeros((4, 4), dtype=torch.int32)
+            positions = torch.randperm(16)[:2]
+            pos_a = (positions[0] // 4, positions[0] % 4)
+            pos_b = (positions[1] // 4, positions[1] % 4)
+            grid[pos_a] = 1
+            grid[pos_b] = 2
+            state = create_initial_state(np.array(grid.numpy()))
             info = game.get_info(state)
             game_adapter.update_from_state(state, info)
             step_count = 0
@@ -139,18 +138,18 @@ def main():
         obs_p1 = game.get_observation(state, 1)
         
         # PPO agent action (player 0)
-        obs_arr = obs_to_array(obs_p0)
-        mask = compute_valid_move_mask(obs_p0.armies, obs_p0.owned_cells, obs_p0.mountains)
-        key, action_key = jrandom.split(key)
-        action_p0, value, logprob, entropy = network(obs_arr, mask, action_key, None)
+        obs_arr = obs_to_array(obs_p0).unsqueeze(0).to(device)
+        mask = torch.tensor(compute_valid_move_mask(obs_p0.armies, obs_p0.owned_cells, obs_p0.mountains), dtype=torch.float32).unsqueeze(0).to(device)
+        with torch.no_grad():
+            action_p0, value, logprob, entropy = network(obs_arr, mask)
+        action_p0 = action_p0.squeeze(0)
         
         # Random agent action (player 1)
-        key, action_key = jrandom.split(key)
-        action_p1 = random_action(action_key, obs_p1)
+        action_p1 = random_action(obs_p1)
         
         # Step the game
-        actions = jnp.stack([action_p0, action_p1], axis=0)
-        new_state, new_info = game.step(state, actions)
+        actions = torch.stack([action_p0, action_p1], dim=0)
+        new_state, new_info = game.step(state, np.array(actions.cpu().numpy()))
         
         # Update state
         state = new_state

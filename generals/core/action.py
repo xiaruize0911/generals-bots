@@ -1,98 +1,82 @@
 """
-Action utilities for JAX game.
+Action utilities for the NumPy-based game core.
 
-This module provides functions for creating and validating actions in the game.
-
-Action Format:
-    Actions are 5-element integer arrays: [pass, row, col, direction, split]
-    - pass: 1 to skip turn, 0 to move
-    - row, col: Source cell coordinates
-    - direction: 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
-    - split: 1 to move half army, 0 to move all-but-one
+Actions are 5-element integer arrays: [pass, row, col, direction, split]
+ - pass: 1 to skip turn, 0 to move
+ - row, col: Source cell coordinates
+ - direction: 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
+ - split: 1 to move half army, 0 to move all-but-one
 """
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
+from __future__ import annotations
+
+import numpy as np
+from typing import Tuple
 
 # Direction offsets: UP, DOWN, LEFT, RIGHT
-DIRECTIONS = jnp.array([[-1, 0], [1, 0], [0, -1], [0, 1]], dtype=jnp.int32)
+DIRECTIONS = np.array([[-1, 0], [1, 0], [0, -1], [0, 1]], dtype=np.int32)
 
 
 def create_action(
     to_pass: bool = False, row: int = 0, col: int = 0, direction: int = 0, to_split: bool = False
-) -> jnp.ndarray:
+) -> np.ndarray:
     """Create action array [pass, row, col, direction, split]."""
-    return jnp.array([int(to_pass), row, col, direction, int(to_split)], dtype=jnp.int32)
+    return np.array([int(to_pass), int(row), int(col), int(direction), int(to_split)], dtype=np.int32)
 
 
-@jax.jit
 def compute_valid_move_mask(
-    armies: jnp.ndarray,
-    owned_cells: jnp.ndarray,
-    mountains: jnp.ndarray,
-) -> jnp.ndarray:
-    """
-    Compute valid move mask (fully vectorized).
+    armies: np.ndarray, owned_cells: np.ndarray, mountains: np.ndarray
+) -> np.ndarray:
+    """Compute valid move mask (H, W, 4) using NumPy.
 
-    Returns (H, W, 4) mask where mask[i, j, d] is True if moving from (i, j)
-    in direction d is valid.
+    Returns a boolean array where True indicates a valid move from (i, j) in
+    the given direction.
     """
     H, W = armies.shape
 
     can_move_from = owned_cells & (armies > 1)
     passable = ~mountains
 
-    # Create coordinate grids: [H, W]
-    i_idx = jnp.arange(H)[:, None]
-    j_idx = jnp.arange(W)[None, :]
-    
-    # Compute destination coords for all 4 directions at once: [H, W, 4]
-    # DIRECTIONS shape is [4, 2], we want dest_i[h, w, d] = h + DIRECTIONS[d, 0]
-    dest_i = i_idx[:, :, None] + DIRECTIONS[None, None, :, 0]  # [H, W, 4]
-    dest_j = j_idx[:, :, None] + DIRECTIONS[None, None, :, 1]  # [H, W, 4]
-    
-    # Check bounds for all directions: [H, W, 4]
-    in_bounds = (dest_i >= 0) & (dest_i < H) & (dest_j >= 0) & (dest_j < W)
-    
-    # Clip to valid indices for safe lookup
-    safe_dest_i = jnp.clip(dest_i, 0, H - 1)
-    safe_dest_j = jnp.clip(dest_j, 0, W - 1)
-    
-    # Check if destinations are passable: [H, W, 4]
-    dest_passable = passable[safe_dest_i, safe_dest_j]
-    
-    # Combine all conditions: [H, W, 4]
-    valid_mask = can_move_from[:, :, None] & in_bounds & dest_passable
+    i_idx = np.arange(H)[:, None]
+    j_idx = np.arange(W)[None, :]
 
+    dest_i = i_idx[:, :, None] + DIRECTIONS[None, None, :, 0]
+    dest_j = j_idx[:, :, None] + DIRECTIONS[None, None, :, 1]
+
+    in_bounds = (dest_i >= 0) & (dest_i < H) & (dest_j >= 0) & (dest_j < W)
+
+    safe_dest_i = np.clip(dest_i, 0, H - 1)
+    safe_dest_j = np.clip(dest_j, 0, W - 1)
+
+    dest_passable = passable[safe_dest_i, safe_dest_j]
+
+    valid_mask = can_move_from[:, :, None] & in_bounds & dest_passable
     return valid_mask
 
 
-@jax.jit
-def compute_valid_move_mask_obs(observation) -> jnp.ndarray:
-    """Compute valid move mask from Observation."""
+def compute_valid_move_mask_obs(observation) -> np.ndarray:
+    """Compute valid move mask from an Observation object (numpy arrays)."""
     return compute_valid_move_mask(observation.armies, observation.owned_cells, observation.mountains)
 
 
-def sample_valid_action(key: jnp.ndarray, observation, allow_pass: bool = True) -> jnp.ndarray:
-    """Sample a random valid action from observation."""
+def sample_valid_action(rng: np.random.Generator, observation, allow_pass: bool = True) -> np.ndarray:
+    """Sample a random valid action from observation using numpy RNG."""
     valid_mask = compute_valid_move_mask_obs(observation)
     H, W = observation.armies.shape
 
-    valid_positions = jnp.argwhere(valid_mask, size=H * W * 4, fill_value=-1)
-    num_valid = jnp.sum(jnp.all(valid_positions >= 0, axis=-1))
+    positions = np.argwhere(valid_mask)
+    num_valid = positions.shape[0]
 
-    k1, k2, k3 = jrandom.split(key, 3)
+    should_pass = False
+    if allow_pass and rng.random() < 0.1:
+        should_pass = True
+    if num_valid == 0:
+        should_pass = True
 
-    should_pass = allow_pass & (jrandom.uniform(k1) < 0.1)
-    should_pass = should_pass | (num_valid == 0)
+    if should_pass:
+        return create_action(True, 0, 0, 0, False)
 
-    move_idx = jrandom.randint(k2, (), 0, jnp.maximum(num_valid, 1))
-    move_idx = jnp.minimum(move_idx, num_valid - 1)
-    selected_move = valid_positions[move_idx]
+    idx = int(rng.integers(0, num_valid))
+    move = positions[idx]
+    split = int(rng.integers(0, 2))
 
-    split = jrandom.randint(k3, (), 0, 2)
-
-    return jnp.array(
-        [should_pass.astype(jnp.int32), selected_move[0], selected_move[1], selected_move[2], split],
-        dtype=jnp.int32,
-    )
+    return np.array([0, int(move[0]), int(move[1]), int(move[2]), split], dtype=np.int32)

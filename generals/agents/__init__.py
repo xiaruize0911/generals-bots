@@ -1,4 +1,4 @@
-# JAX-compatible agents
+# Agents (NumPy-compatible / PyTorch-ready)
 from .agent import Agent
 from .random_agent import RandomAgent
 from .expander_agent import ExpanderAgent

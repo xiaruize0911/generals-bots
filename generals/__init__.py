@@ -1,4 +1,4 @@
-# JAX-based Generals.io implementation
+# NumPy-based Generals.io implementation
 from generals.core.env import GeneralsEnv
 from generals.core.game import GameState, GameInfo, create_initial_state, step, get_observation
 from generals.core.observation import Observation

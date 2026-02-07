@@ -1,5 +1,5 @@
 """
-Game observation for JAX environment.
+Game observation for the NumPy-based environment.
 
 This module defines the Observation class that represents what a player can see
 during a game. Observations include fog of war - players can only see cells
@@ -7,7 +7,7 @@ within a 3x3 radius of cells they own.
 """
 from typing import NamedTuple
 
-import jax.numpy as jnp
+import numpy as np
 
 
 class Observation(NamedTuple):
@@ -34,22 +34,22 @@ class Observation(NamedTuple):
         timestep: Scalar, current game step (0-indexed).
     """
 
-    armies: jnp.ndarray
-    generals: jnp.ndarray
-    cities: jnp.ndarray
-    mountains: jnp.ndarray
-    neutral_cells: jnp.ndarray
-    owned_cells: jnp.ndarray
-    opponent_cells: jnp.ndarray
-    fog_cells: jnp.ndarray
-    structures_in_fog: jnp.ndarray
-    owned_land_count: jnp.ndarray
-    owned_army_count: jnp.ndarray
-    opponent_land_count: jnp.ndarray
-    opponent_army_count: jnp.ndarray
-    timestep: jnp.ndarray
+    armies: np.ndarray
+    generals: np.ndarray
+    cities: np.ndarray
+    mountains: np.ndarray
+    neutral_cells: np.ndarray
+    owned_cells: np.ndarray
+    opponent_cells: np.ndarray
+    fog_cells: np.ndarray
+    structures_in_fog: np.ndarray
+    owned_land_count: np.ndarray
+    owned_army_count: np.ndarray
+    opponent_land_count: np.ndarray
+    opponent_army_count: np.ndarray
+    timestep: np.ndarray
 
-    def as_tensor(self) -> jnp.ndarray:
+    def as_tensor(self) -> np.ndarray:
         """
         Convert observation to a tensor for neural networks.
 
@@ -66,13 +66,13 @@ class Observation(NamedTuple):
         shape = self.armies.shape
 
         if len(shape) == 4:  # Vectorized: (N, P, H, W)
-            owned_land = jnp.broadcast_to(self.owned_land_count[..., None, None], shape)
-            owned_army = jnp.broadcast_to(self.owned_army_count[..., None, None], shape)
-            opponent_land = jnp.broadcast_to(self.opponent_land_count[..., None, None], shape)
-            opponent_army = jnp.broadcast_to(self.opponent_army_count[..., None, None], shape)
-            timestep_broadcast = jnp.broadcast_to(self.timestep[..., None, None], shape)
+            owned_land = np.broadcast_to(self.owned_land_count[..., None, None], shape)
+            owned_army = np.broadcast_to(self.owned_army_count[..., None, None], shape)
+            opponent_land = np.broadcast_to(self.opponent_land_count[..., None, None], shape)
+            opponent_army = np.broadcast_to(self.opponent_army_count[..., None, None], shape)
+            timestep_broadcast = np.broadcast_to(self.timestep[..., None, None], shape)
 
-            return jnp.stack(
+            return np.stack(
                 [
                     self.armies,
                     self.generals,
@@ -92,7 +92,7 @@ class Observation(NamedTuple):
                 axis=2,
             )
         else:  # Single observation: (H, W)
-            return jnp.stack(
+            return np.stack(
                 [
                     self.armies,
                     self.generals,
@@ -103,11 +103,11 @@ class Observation(NamedTuple):
                     self.opponent_cells,
                     self.fog_cells,
                     self.structures_in_fog,
-                    jnp.ones(shape, dtype=jnp.int32) * self.owned_land_count,
-                    jnp.ones(shape, dtype=jnp.int32) * self.owned_army_count,
-                    jnp.ones(shape, dtype=jnp.int32) * self.opponent_land_count,
-                    jnp.ones(shape, dtype=jnp.int32) * self.opponent_army_count,
-                    jnp.ones(shape, dtype=jnp.int32) * self.timestep,
+                    np.ones(shape, dtype=np.int32) * self.owned_land_count,
+                    np.ones(shape, dtype=np.int32) * self.owned_army_count,
+                    np.ones(shape, dtype=np.int32) * self.opponent_land_count,
+                    np.ones(shape, dtype=np.int32) * self.opponent_army_count,
+                    np.ones(shape, dtype=np.int32) * self.timestep,
                 ],
                 axis=0,
             )

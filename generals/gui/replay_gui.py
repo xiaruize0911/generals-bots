@@ -1,15 +1,15 @@
 """
-Simple GUI wrapper for visualizing JAX game states.
+Simple GUI wrapper for visualizing game states.
 
-This provides a simpler interface than the full GUI class,
-designed for quick visualization of games.
+This provides a simpler interface than the full GUI class for quick
+visualization of games.
 """
 from typing import Any
 
 import pygame
 
 from generals.core.game import GameState, GameInfo, get_info
-from generals.core.rendering import JaxGameAdapter
+from generals.core.rendering import NpGameAdapter
 from .gui import GUI as FullGUI
 from .properties import GuiMode
 
@@ -48,7 +48,7 @@ class ReplayGUI:
         self.fps = fps
         
         # Create adapter and full GUI
-        self._adapter = JaxGameAdapter(initial_state, self.agent_ids, get_info(initial_state))
+        self._adapter = NpGameAdapter(initial_state, self.agent_ids, get_info(initial_state))
         agent_data = {
             self.agent_ids[0]: {"color": colors[0]},
             self.agent_ids[1]: {"color": colors[1]},

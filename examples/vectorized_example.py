@@ -1,54 +1,30 @@
-"""Vectorized environments example - run many games in parallel with jax.vmap."""
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
+"""Simple batched example using NumPy RNG to create multiple independent envs."""
+import numpy as np
 
 from generals import GeneralsEnv, get_observation
 from generals.agents import RandomAgent, ExpanderAgent
 
-NUM_ENVS = 256
-GRID_DIMS = (10, 10)
 
-# Create environment and agents
-env = GeneralsEnv(grid_dims=GRID_DIMS, truncation=500)
-agent_0 = RandomAgent()
-agent_1 = ExpanderAgent()
+ENV_COUNT = 8
+env = GeneralsEnv(grid_dims=(10, 10), truncation=200)
 
-# Generate state pool (once) and per-env initial states
-key = jrandom.PRNGKey(42)
-key, pool_key = jrandom.split(key)
-env.reset(pool_key)  # generates shared pool
+# Create independent starting states
+states = [env.init_state(seed=i) for i in range(ENV_COUNT)]
 
-# Create initial states for all envs
-init_keys = jrandom.split(key, NUM_ENVS)
-states = jax.vmap(env.init_state)(init_keys)
+agents = [RandomAgent(), ExpanderAgent()]
 
-# Vectorize functions
-step_vmap = jax.vmap(env.step)
-get_obs_p0 = jax.vmap(lambda s: get_observation(s, 0))
-get_obs_p1 = jax.vmap(lambda s: get_observation(s, 1))
-act_p0 = jax.vmap(agent_0.act)
-act_p1 = jax.vmap(agent_1.act)
+for t in range(100):
+    actions = []
+    for s in states:
+        obs0 = get_observation(s, 0)
+        obs1 = get_observation(s, 1)
+        a0 = agents[0].act(obs0, np.random.default_rng())
+        a1 = agents[1].act(obs1, np.random.default_rng())
+        actions.append(np.stack([a0, a1]))
 
-# Game loop
-for step_idx in range(300):
-    # Get observations and actions
-    obs_p0 = get_obs_p0(states)
-    obs_p1 = get_obs_p1(states)
-
-    key, *subkeys = jrandom.split(key, NUM_ENVS * 2 + 1)
-    keys_p0 = jnp.array(subkeys[:NUM_ENVS])
-    keys_p1 = jnp.array(subkeys[NUM_ENVS:])
-
-    actions_p0 = act_p0(obs_p0, keys_p0)
-    actions_p1 = act_p1(obs_p1, keys_p1)
-    actions = jnp.stack([actions_p0, actions_p1], axis=1)
-
-    # Step all environments (auto-resets from pool internally)
-    timesteps, states = step_vmap(states, actions)
-
-    if step_idx % 20 == 0:
-        avg_p0_land = jnp.mean(timesteps.info.land[:, 0])
-        avg_p1_land = jnp.mean(timesteps.info.land[:, 1])
-        num_done = jnp.sum(timesteps.terminated | timesteps.truncated)
-        print(f"Step {step_idx:3d}: P0={avg_p0_land:5.1f} P1={avg_p1_land:5.1f}")
+    # Step all envs sequentially
+    new_states = []
+    for s, a in zip(states, actions):
+        _, ns = env.step(s, a)
+        new_states.append(ns)
+    states = new_states
